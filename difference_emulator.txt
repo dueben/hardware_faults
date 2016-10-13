@@ -1,0 +1,93 @@
+The rpe emulator for reduced numerical precision that is available at "https://github.com/aopp-pred/rpe" has been used to mimic the use of hardware that shows bits flips. The code was compiled with the GNU compiler. To allow the emulation of bit flips the following changes have been performed to the main source file of the standard emulator "rp_emulator.F90":
+
+1. Add variables to "MODULE rp_emulator":
+LOGICAL, PUBLIC :: RPE_STOCHASTIC   !Should be set .TRUE. if bit flips are emulated.
+REAL(KIND=RPE_REAL_KIND), PUBLIC :: rpe_fault_rate    !Fault rate for bit flips.
+
+2. Add interface to MODULE rp_emulator to call a random number generator in C (to trick Fortran to be able to use random bitflips in functions with ELEMENTAL attribute):
+interface
+   subroutine seed_crand () bind(C)
+   end subroutine seed_crand
+
+   pure function crand () result(r) bind(C)
+      use, intrinsic :: iso_c_binding, only : c_double
+      real(c_double) :: r
+   end function crand
+end interface
+
+3. Change subroutine "apply_truncation" to enable the use of bit flips:
+    ELEMENTAL SUBROUTINE apply_truncation (x)
+    ! Reduce the precision of a `rpe_type` instance.
+    !
+    ! Truncates the given floating-point number significand to the
+    ! number of bits defined by the `sbits` member of the number. If the
+    ! `sbits` attribute is not set it will truncate to the number of
+    ! bits specified by the current value of `RPE_DEFAULT_SBITS`.
+    !
+    ! If the module variable RPE_ACTIVE is false this subroutine returns
+    ! the unaltered input value, it only performs the bit truncation if
+    ! RPE_ACTIVE is true.
+    !
+    ! Argument:
+    !
+    ! * x: type(rpe_type) [input/output]
+    !     The `rpe_type` instance to truncate.
+    !
+        TYPE(rpe_var), INTENT(INOUT) :: x
+        REAL(KIND=RPE_DOUBLE_KIND)   :: y
+        INTEGER :: truncation
+        IF (RPE_ACTIVE) THEN
+           IF(.not.RPE_STOCHASTIC)THEN
+              ! Cast the input to a double-precision value.
+              y = REAL(x%val, RPE_DOUBLE_KIND)
+              IF (x%sbits == RPE_SBITS_UNSPECIFIED) THEN
+                 ! If the input does not have a specified precision then assume
+                 ! the default precision. This is does not fix the precision of
+                 ! the input variable, it will still use whatever is specified
+                 ! as the default, even if that changes later.
+                 truncation = RPE_DEFAULT_SBITS
+              ELSE
+                 truncation = x%sbits
+              END IF
+              ! Set the contained value to the truncated value.
+              x%val = truncate_significand(y, truncation)
+           ELSE
+              y = REAL(x%val, RPE_DOUBLE_KIND)
+              x%val = apply_stochastic(y)
+           END IF
+        END IF
+    END SUBROUTINE apply_truncation
+
+4. Add two functions to apply the bit flips randomly:
+    ELEMENTAL FUNCTION apply_stochastic (x) RESULT (t)
+      REAL(KIND=RPE_DOUBLE_KIND), INTENT(IN) :: x
+      REAL(KIND=RPE_DOUBLE_KIND) :: t
+      REAL(KIND=RPE_DOUBLE_KIND) :: random
+      INTEGER(KIND=8)            :: bits
+      INTEGER(KIND=8)            :: itest
+      INTEGER                    :: flip_bit
+          
+      random = rr()
+      IF(random.lt.rpe_fault_rate)THEN
+         bits = TRANSFER(x, bits)         
+         random = rr()
+         random = random * real(64,8)!RPE_DOUBLE_KIND)
+         flip_bit = ceiling(random)-1 !Range should be between 0-63
+         itest = 0
+         CALL MVBITS(bits,flip_bit,1,itest,1)
+         IF(itest==0)THEN
+            bits = IBSET(bits,flip_bit)
+         ELSE
+            bits = IBCLR(bits,flip_bit)
+         END IF
+         t = TRANSFER(bits, t)
+      ELSE
+         t = x
+      END IF
+    END FUNCTION apply_stochastic
+
+    pure function rr () result(x)
+        implicit none
+        REAL*8 :: x
+        x = crand()
+    end function rr
