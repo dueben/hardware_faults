@@ -1,7 +1,7 @@
 program cgrid_shallow_water
   !C-grid shallow water model written by Peter Dueben based on F77 code of David Marshall
   
-  USE rp_emulator !Use edited emulator for reduced precision to mimic bit flips (see difference_emulator.txt)
+!  USE rp_emulator !Use edited emulator for reduced precision to mimic bit flips (see difference_emulator.txt)
   implicit none
 
 !Grid parameters:  
